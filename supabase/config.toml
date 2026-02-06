@@ -1,0 +1,19 @@
+project_id = "zwwbmavhsonzsqticqul"
+
+[functions.create-room]
+verify_jwt = false
+
+[functions.join-room]
+verify_jwt = false
+
+[functions.start-game]
+verify_jwt = false
+
+[functions.submit-bid]
+verify_jwt = false
+
+[functions.next-round]
+verify_jwt = false
+
+[functions.resolve-round]
+verify_jwt = false
