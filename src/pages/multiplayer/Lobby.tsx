@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useSearchParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { formatINR } from "@/data/items";
+import { getGameSession, getSessionHeaders } from "@/lib/gameSession";
 
 interface LobbyPlayer {
   id: string;
@@ -24,16 +25,24 @@ interface RoomData {
 
 export default function Lobby() {
   const { roomId } = useParams<{ roomId: string }>();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const playerName = searchParams.get("name") || "Player";
-  const isHost = searchParams.get("host") === "true";
-  const playerId = searchParams.get("playerId") || "";
+
+  const session = roomId ? getGameSession(roomId) : null;
+  const playerName = session?.playerName || "Player";
+  const isHost = session?.isHost || false;
+  const myPlayerId = session?.playerId || "";
 
   const [room, setRoom] = useState<RoomData | null>(null);
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [loading, setLoading] = useState(false);
-  const [myPlayerId, setMyPlayerId] = useState(playerId);
+
+  // Redirect if no session
+  useEffect(() => {
+    if (!session) {
+      toast.error("Session expired. Please rejoin.");
+      navigate("/multiplayer");
+    }
+  }, [session, navigate]);
 
   // Fetch room data
   const fetchRoom = useCallback(async () => {
@@ -51,9 +60,9 @@ export default function Lobby() {
 
     // If room transitioned to bidding, go to game
     if (data.status === "bidding") {
-      navigate(`/multiplayer/game/${roomId}?name=${encodeURIComponent(playerName)}&playerId=${myPlayerId}`);
+      navigate(`/multiplayer/game/${roomId}`);
     }
-  }, [roomId, navigate, playerName, myPlayerId]);
+  }, [roomId, navigate]);
 
   // Fetch players
   const fetchPlayers = useCallback(async () => {
@@ -80,7 +89,7 @@ export default function Lobby() {
         const updated = payload.new as RoomData;
         setRoom(updated);
         if (updated.status === "bidding") {
-          navigate(`/multiplayer/game/${roomId}?name=${encodeURIComponent(playerName)}&playerId=${myPlayerId}`);
+          navigate(`/multiplayer/game/${roomId}`);
         }
       })
       .subscribe();
@@ -88,20 +97,15 @@ export default function Lobby() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [roomId, fetchRoom, fetchPlayers, navigate, playerName, myPlayerId]);
-
-  // For host: store playerId from room
-  useEffect(() => {
-    if (isHost && room && !myPlayerId) {
-      setMyPlayerId(room.host_player_id);
-    }
-  }, [isHost, room, myPlayerId]);
+  }, [roomId, fetchRoom, fetchPlayers, navigate]);
 
   const handleStartGame = async () => {
+    if (!roomId) return;
     setLoading(true);
     try {
       const { error } = await supabase.functions.invoke("start-game", {
         body: { roomId },
+        headers: getSessionHeaders(roomId),
       });
       if (error) throw error;
     } catch (err: any) {
@@ -145,7 +149,7 @@ export default function Lobby() {
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.1 }}
                 className={`flex items-center justify-between px-3 py-2 rounded text-sm ${
-                  p.id === myPlayerId || p.id === room?.host_player_id
+                  p.id === myPlayerId
                     ? "border border-primary/40 bg-primary/5"
                     : "bg-muted/30"
                 }`}
@@ -156,7 +160,7 @@ export default function Lobby() {
                   )}
                   <span className="font-body font-semibold text-foreground">
                     {p.player_name}
-                    {(p.id === myPlayerId || (isHost && p.id === room?.host_player_id)) && " (You)"}
+                    {p.id === myPlayerId && " (You)"}
                   </span>
                 </div>
                 <span className="font-mono text-neon-gold text-sm">

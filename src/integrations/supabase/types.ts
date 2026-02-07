@@ -56,6 +56,45 @@ export type Database = {
           },
         ]
       }
+      player_sessions: {
+        Row: {
+          created_at: string
+          id: string
+          player_id: string
+          room_id: string
+          session_token: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          player_id: string
+          room_id: string
+          session_token: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          player_id?: string
+          room_id?: string
+          session_token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "player_sessions_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "player_sessions_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       players: {
         Row: {
           capital: number
@@ -99,6 +138,7 @@ export type Database = {
           host_player_id: string | null
           id: string
           items: Json | null
+          last_resolved_round: number
           max_rounds: number
           room_code: string
           status: string
@@ -111,6 +151,7 @@ export type Database = {
           host_player_id?: string | null
           id?: string
           items?: Json | null
+          last_resolved_round?: number
           max_rounds?: number
           room_code: string
           status?: string
@@ -123,6 +164,7 @@ export type Database = {
           host_player_id?: string | null
           id?: string
           items?: Json | null
+          last_resolved_round?: number
           max_rounds?: number
           room_code?: string
           status?: string

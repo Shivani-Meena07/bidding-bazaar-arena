@@ -6,6 +6,28 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+async function validateSession(supabase: any, req: Request): Promise<{ playerId: string; roomId: string } | null> {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+
+  const token = authHeader.replace("Bearer ", "");
+  const { data } = await supabase
+    .from("player_sessions")
+    .select("player_id, room_id")
+    .eq("session_token", token)
+    .maybeSingle();
+
+  return data || null;
+}
+
+function safeErrorResponse(err: unknown, status = 500): Response {
+  console.error("next-round error:", err);
+  return new Response(
+    JSON.stringify({ error: "An unexpected error occurred" }),
+    { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -25,6 +47,15 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
+    // Validate session
+    const session = await validateSession(supabase, req);
+    if (!session || session.roomId !== roomId) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Get room
     const { data: room } = await supabase
       .from("rooms")
@@ -36,6 +67,14 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ error: "Room not found" }),
         { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Verify caller is host
+    if (room.host_player_id !== session.playerId) {
+      return new Response(
+        JSON.stringify({ error: "Only the host can advance rounds" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -80,9 +119,6 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return safeErrorResponse(err);
   }
 });

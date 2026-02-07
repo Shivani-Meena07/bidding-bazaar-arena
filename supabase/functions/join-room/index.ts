@@ -6,6 +6,22 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+const PLAYER_NAME_REGEX = /^[a-zA-Z0-9_ -]{1,20}$/;
+
+function generateSessionToken(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function safeErrorResponse(err: unknown, status = 500): Response {
+  console.error("join-room error:", err);
+  return new Response(
+    JSON.stringify({ error: "An unexpected error occurred" }),
+    { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -13,12 +29,23 @@ Deno.serve(async (req) => {
 
   try {
     const { playerName, roomCode } = await req.json();
-    if (!playerName || !roomCode) {
+
+    // Validate player name
+    if (!playerName || typeof playerName !== "string" || !PLAYER_NAME_REGEX.test(playerName.trim())) {
       return new Response(
-        JSON.stringify({ error: "playerName and roomCode are required" }),
+        JSON.stringify({ error: "Invalid player name. Use 1-20 alphanumeric characters, underscores, spaces, or hyphens." }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    if (!roomCode || typeof roomCode !== "string") {
+      return new Response(
+        JSON.stringify({ error: "Room code is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const sanitizedName = playerName.trim();
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -32,7 +59,7 @@ Deno.serve(async (req) => {
       .eq("room_code", roomCode.toUpperCase())
       .maybeSingle();
 
-    if (roomError) throw roomError;
+    if (roomError) return safeErrorResponse(roomError);
     if (!room) {
       return new Response(
         JSON.stringify({ error: "Room not found. Check your code." }),
@@ -62,20 +89,29 @@ Deno.serve(async (req) => {
     // Create player
     const { data: player, error: playerError } = await supabase
       .from("players")
-      .insert({ room_id: room.id, player_name: playerName, capital: 1000 })
+      .insert({ room_id: room.id, player_name: sanitizedName, capital: 1000 })
       .select("id")
       .single();
 
-    if (playerError) throw playerError;
+    if (playerError) return safeErrorResponse(playerError);
+
+    // Generate session token
+    const sessionToken = generateSessionToken();
+    const { error: sessionError } = await supabase
+      .from("player_sessions")
+      .insert({
+        session_token: sessionToken,
+        player_id: player.id,
+        room_id: room.id,
+      });
+
+    if (sessionError) return safeErrorResponse(sessionError);
 
     return new Response(
-      JSON.stringify({ roomId: room.id, playerId: player.id }),
+      JSON.stringify({ roomId: room.id, playerId: player.id, sessionToken }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return safeErrorResponse(err);
   }
 });

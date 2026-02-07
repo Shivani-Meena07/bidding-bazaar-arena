@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useSearchParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -9,6 +9,7 @@ import { ItemCard } from "@/components/game/ItemCard";
 import { BidPanel } from "@/components/game/BidPanel";
 import { PlayerList } from "@/components/game/PlayerList";
 import { Player } from "@/hooks/useGameState";
+import { getGameSession, getSessionHeaders } from "@/lib/gameSession";
 
 interface RoomData {
   id: string;
@@ -27,13 +28,6 @@ interface DBPlayer {
   is_eliminated: boolean;
 }
 
-interface BidRecord {
-  id: string;
-  player_id: string;
-  amount: number;
-  round_number: number;
-}
-
 interface RoundResultData {
   winnerId: string;
   winnerName: string;
@@ -45,17 +39,25 @@ interface RoundResultData {
 
 export default function GameArena() {
   const { roomId } = useParams<{ roomId: string }>();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const playerName = searchParams.get("name") || "Player";
-  const myPlayerId = searchParams.get("playerId") || "";
+
+  const session = roomId ? getGameSession(roomId) : null;
+  const playerName = session?.playerName || "Player";
+  const myPlayerId = session?.playerId || "";
 
   const [room, setRoom] = useState<RoomData | null>(null);
   const [players, setPlayers] = useState<DBPlayer[]>([]);
   const [hasBid, setHasBid] = useState(false);
   const [roundResult, setRoundResult] = useState<RoundResultData | null>(null);
   const [bidsCount, setBidsCount] = useState(0);
-  const [gameOverPlayers, setGameOverPlayers] = useState<DBPlayer[]>([]);
+
+  // Redirect if no session
+  useEffect(() => {
+    if (!session) {
+      toast.error("Session expired. Please rejoin.");
+      navigate("/multiplayer");
+    }
+  }, [session, navigate]);
 
   const fetchRoom = useCallback(async () => {
     if (!roomId) return;
@@ -119,9 +121,8 @@ export default function GameArena() {
         setRoom(updated);
 
         if (updated.status === "results") {
-          // Fetch the round result from edge function response (stored in room or via separate fetch)
           fetchPlayers();
-          setRoundResult(null); // Will be populated by resolve-round response broadcast
+          setRoundResult(null);
         }
         if (updated.status === "bidding") {
           setHasBid(false);
@@ -129,9 +130,7 @@ export default function GameArena() {
           fetchPlayers();
         }
         if (updated.status === "game_over") {
-          fetchPlayers().then(() => {
-            // Players are the final standings
-          });
+          fetchPlayers();
         }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `room_id=eq.${roomId}` }, () => {
@@ -155,15 +154,11 @@ export default function GameArena() {
     try {
       const { data, error } = await supabase.functions.invoke("submit-bid", {
         body: { roomId, playerId: myPlayerId, amount, roundNumber: room.current_round },
+        headers: getSessionHeaders(roomId),
       });
       if (error) throw error;
       setHasBid(true);
       toast.success("Bid submitted!");
-
-      // If all bids are in, resolve
-      if (data?.allBidsIn) {
-        // The edge function will auto-resolve
-      }
     } catch (err: any) {
       toast.error(err.message || "Failed to submit bid");
     }
@@ -174,6 +169,7 @@ export default function GameArena() {
     try {
       const { error } = await supabase.functions.invoke("next-round", {
         body: { roomId },
+        headers: getSessionHeaders(roomId),
       });
       if (error) throw error;
     } catch (err: any) {
