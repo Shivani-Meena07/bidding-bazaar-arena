@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { saveGameSession } from "@/lib/gameSession";
 
 export default function JoinRoom() {
   const navigate = useNavigate();
@@ -12,8 +13,14 @@ export default function JoinRoom() {
   const [loading, setLoading] = useState(false);
 
   const handleJoin = async () => {
-    if (!playerName.trim()) {
+    const trimmed = playerName.trim();
+    if (!trimmed) {
       toast.error("Enter your callsign first!");
+      return;
+    }
+    // Client-side validation matching server regex
+    if (!/^[a-zA-Z0-9_ -]{1,20}$/.test(trimmed)) {
+      toast.error("Use 1-20 alphanumeric characters, underscores, spaces, or hyphens.");
       return;
     }
     if (!roomCode.trim()) {
@@ -23,11 +30,21 @@ export default function JoinRoom() {
     setLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke("join-room", {
-        body: { playerName: playerName.trim(), roomCode: roomCode.trim().toUpperCase() },
+        body: { playerName: trimmed, roomCode: roomCode.trim().toUpperCase() },
       });
       if (error) throw error;
       if (!data?.roomId) throw new Error("Could not join room");
-      navigate(`/multiplayer/lobby/${data.roomId}?name=${encodeURIComponent(playerName.trim())}&playerId=${data.playerId}`);
+
+      // Store session securely in localStorage
+      saveGameSession(data.roomId, {
+        sessionToken: data.sessionToken,
+        playerId: data.playerId,
+        roomId: data.roomId,
+        playerName: trimmed,
+        isHost: false,
+      });
+
+      navigate(`/multiplayer/lobby/${data.roomId}`);
     } catch (err: any) {
       toast.error(err.message || "Failed to join room");
     } finally {

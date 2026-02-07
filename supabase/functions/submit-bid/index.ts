@@ -6,6 +6,28 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+async function validateSession(supabase: any, req: Request): Promise<{ playerId: string; roomId: string } | null> {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+
+  const token = authHeader.replace("Bearer ", "");
+  const { data } = await supabase
+    .from("player_sessions")
+    .select("player_id, room_id")
+    .eq("session_token", token)
+    .maybeSingle();
+
+  return data || null;
+}
+
+function safeErrorResponse(err: unknown, status = 500): Response {
+  console.error("submit-bid error:", err);
+  return new Response(
+    JSON.stringify({ error: "An unexpected error occurred" }),
+    { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -20,10 +42,27 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Validate amount is a number
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+      return new Response(
+        JSON.stringify({ error: "Invalid bid amount" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
+
+    // Validate session and verify player identity
+    const session = await validateSession(supabase, req);
+    if (!session || session.playerId !== playerId || session.roomId !== roomId) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     // Verify room is in bidding phase
     const { data: room } = await supabase
@@ -55,7 +94,7 @@ Deno.serve(async (req) => {
     }
 
     // Clamp bid amount
-    const bidAmount = Math.max(0, Math.min(amount, player.capital));
+    const bidAmount = Math.max(0, Math.min(Math.floor(amount), player.capital));
 
     // Insert bid
     const { error: bidError } = await supabase
@@ -74,7 +113,7 @@ Deno.serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      throw bidError;
+      return safeErrorResponse(bidError);
     }
 
     // Check if all active players have bid
@@ -93,8 +132,20 @@ Deno.serve(async (req) => {
     const allBidsIn = (roundBids || 0) >= (activePlayers || 0);
 
     if (allBidsIn) {
-      // Auto-resolve the round
-      await resolveRound(supabase, roomId, room);
+      // Use idempotency check: only resolve if last_resolved_round < current round
+      const { data: updatedRoom, error: updateError } = await supabase
+        .from("rooms")
+        .update({ last_resolved_round: room.current_round })
+        .eq("id", roomId)
+        .lt("last_resolved_round", room.current_round)
+        .select()
+        .single();
+
+      if (updatedRoom && !updateError) {
+        // We won the race - resolve the round
+        await resolveRound(supabase, roomId, room);
+      }
+      // If updatedRoom is null, another request already resolved this round
     }
 
     return new Response(
@@ -102,10 +153,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return safeErrorResponse(err);
   }
 });
 
